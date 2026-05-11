@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>HTML → Figma AutoLayout</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#1e1e2e;color:#cdd6f4;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+.header{padding:16px 20px 12px;border-bottom:1px solid #313244;display:flex;align-items:center;gap:10px;flex-shrink:0}
+.logo{width:28px;height:28px;background:linear-gradient(135deg,#89b4fa,#cba6f7);border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:14px}
+.title{font-size:15px;font-weight:600;color:#cdd6f4}
+.subtitle{font-size:11px;color:#6c7086;margin-top:1px}
+.body{flex:1;display:flex;gap:0;overflow:hidden;min-height:0}
+.left{width:300px;flex-shrink:0;display:flex;flex-direction:column;border-right:1px solid #313244;padding:16px;gap:12px;overflow-y:auto}
+.right{flex:1;display:flex;flex-direction:column;padding:16px;gap:12px;min-width:0;overflow:hidden}
+.section-label{font-size:11px;font-weight:600;color:#6c7086;text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px}
+.drop-zone{border:2px dashed #45475a;border-radius:10px;padding:28px 16px;text-align:center;cursor:pointer;transition:all .2s;background:#181825;position:relative}
+.drop-zone:hover,.drop-zone.drag-over{border-color:#89b4fa;background:#1a1a2e}
+.drop-zone input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
+.drop-icon{font-size:28px;margin-bottom:8px}
+.drop-text{font-size:13px;color:#a6adc8;line-height:1.5}
+.drop-sub{font-size:11px;color:#6c7086;margin-top:4px}
+.file-info{background:#181825;border:1px solid #313244;border-radius:8px;padding:10px 12px;font-size:12px;color:#a6adc8;display:none}
+.file-info.show{display:block}
+.file-name{color:#89b4fa;font-weight:600;margin-bottom:2px}
+.file-size{color:#6c7086}
+.html-label{font-size:11px;font-weight:600;color:#6c7086;text-transform:uppercase;letter-spacing:.08em}
+textarea{width:100%;height:120px;background:#181825;border:1px solid #313244;border-radius:8px;color:#cdd6f4;font-family:'Fira Code','Cascadia Code',monospace;font-size:11px;padding:10px;resize:vertical;outline:none;line-height:1.5}
+textarea:focus{border-color:#89b4fa}
+.or-divider{display:flex;align-items:center;gap:8px;font-size:11px;color:#6c7086}
+.or-divider::before,.or-divider::after{content:'';flex:1;height:1px;background:#313244}
+.btn{padding:9px 18px;border-radius:8px;border:none;font-size:13px;font-weight:600;cursor:pointer;transition:all .15s;display:inline-flex;align-items:center;gap:7px}
+.btn-primary{background:linear-gradient(135deg,#89b4fa,#cba6f7);color:#1e1e2e;width:100%}
+.btn-primary:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 4px 16px rgba(137,180,250,.3)}
+.btn-primary:disabled{opacity:.5;cursor:not-allowed;transform:none}
+.btn-secondary{background:#313244;color:#cdd6f4}
+.btn-secondary:hover{background:#45475a}
+.actions{display:flex;gap:8px;flex-shrink:0}
+.preview-area{flex:1;border:1px solid #313244;border-radius:10px;overflow:hidden;background:#fff;min-height:0;position:relative}
+.preview-placeholder{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:#6c7086;font-size:13px;pointer-events:none}
+.preview-placeholder .ph-icon{font-size:32px}
+iframe{width:100%;height:100%;border:none;display:none}
+.tree-preview{flex:1;overflow:auto;background:#181825;border:1px solid #313244;border-radius:8px;padding:10px;font-family:'Fira Code',monospace;font-size:10px;color:#a6adc8;display:none;white-space:pre}
+.status{font-size:11px;color:#a6adc8;flex-shrink:0;display:flex;align-items:center;gap:6px}
+.status .dot{width:6px;height:6px;border-radius:50%;background:#45475a;flex-shrink:0}
+.status.ready .dot{background:#a6e3a1}
+.status.loading .dot{background:#fab387;animation:pulse 1s infinite}
+.status.error .dot{background:#f38ba8}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+.spinner{width:14px;height:14px;border:2px solid #45475a;border-top-color:#89b4fa;border-radius:50%;animation:spin .6s linear infinite;flex-shrink:0}
+@keyframes spin{to{transform:rotate(360deg)}}
+.tabs{display:flex;gap:2px;flex-shrink:0}
+.tab{padding:5px 12px;border-radius:6px;font-size:11px;font-weight:600;cursor:pointer;color:#6c7086;transition:all .15s}
+.tab.active{background:#313244;color:#cdd6f4}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="logo">⚡</div>
+  <div>
+    <div class="title">HTML → Figma AutoLayout</div>
+    <div class="subtitle">ZIP yoki HTML kodini Figma layerlarga aylantiring</div>
+  </div>
+</div>
+
+<div class="body">
+  <div class="left">
+    <div>
+      <div class="section-label">ZIP Fayl yuklash</div>
+      <div class="drop-zone" id="dropZone">
+        <input type="file" id="fileInput" accept=".zip"/>
+        <div class="drop-icon">📦</div>
+        <div class="drop-text">ZIP faylni shu yerga tashlang</div>
+        <div class="drop-sub">yoki bosib tanlang</div>
+      </div>
+    </div>
+
+    <div class="file-info" id="fileInfo">
+      <div class="file-name" id="fileName"></div>
+      <div class="file-size" id="fileSize"></div>
+    </div>
+
+    <div class="or-divider">yoki HTML kodni kiriting</div>
+
+    <div>
+      <div class="html-label" style="margin-bottom:6px">HTML kodi</div>
+      <textarea id="htmlInput" placeholder='<div style="display:flex;flex-direction:column;gap:16px;padding:24px;background:#ffffff">
+  <h1 style="font-size:24px;color:#1a1a1a">Salom Dunyo</h1>
+  <p style="font-size:14px;color:#666">Bu Figmada auto-layout frame bo&apos;ladi!</p>
+</div>'></textarea>
+    </div>
+
+    <button class="btn btn-primary" id="createBtn" disabled>
+      <span id="btnIcon">✨</span>
+      <span id="btnText">Figmada yaratish</span>
+    </button>
+
+    <div class="status" id="status">
+      <div class="dot"></div>
+      <span id="statusText">Fayl yoki HTML kodi kiriting</span>
+    </div>
+  </div>
+
+  <div class="right">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-shrink:0">
+      <div class="section-label" style="margin-bottom:0">Ko'rinish</div>
+      <div class="tabs">
+        <div class="tab active" id="tabPreview" onclick="switchTab('preview')">Preview</div>
+        <div class="tab" id="tabTree" onclick="switchTab('tree')">Node Tree</div>
+      </div>
+    </div>
+
+    <div class="preview-area" id="previewArea">
+      <div class="preview-placeholder" id="placeholder">
+        <div class="ph-icon">🖼️</div>
+        <span>HTML preview bu yerda ko'rinadi</span>
+      </div>
+      <iframe id="preview" title="preview" sandbox="allow-scripts"></iframe>
+    </div>
+
+    <pre class="tree-preview" id="treePreview"></pre>
+  </div>
+</div>
+
+<script>
+(function(){
+  const s=document.createElement('script');
+  s.src='https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+  s.onerror=()=>{console.warn('JSZip CDN failed');};
+  document.head.appendChild(s);
+})();
+
+let currentHTML = '';
+let currentTree = null;
+let activeTab = 'preview';
+
+const fileInput  = document.getElementById('fileInput');
+const dropZone   = document.getElementById('dropZone');
+const fileInfo   = document.getElementById('fileInfo');
+const fileName   = document.getElementById('fileName');
+const fileSize   = document.getElementById('fileSize');
+const htmlInput  = document.getElementById('htmlInput');
+const createBtn  = document.getElementById('createBtn');
+const btnIcon    = document.getElementById('btnIcon');
+const btnText    = document.getElementById('btnText');
+const statusEl   = document.getElementById('status');
+const statusText = document.getElementById('statusText');
+const preview    = document.getElementById('preview');
+const placeholder= document.getElementById('placeholder');
+const treePreview= document.getElementById('treePreview');
+
+function switchTab(tab) {
+  activeTab = tab;
+  document.getElementById('tabPreview').classList.toggle('active', tab==='preview');
+  document.getElementById('tabTree').classList.toggle('active', tab==='tree');
+  const previewArea = document.getElementById('previewArea');
+  if (tab === 'preview') {
+    previewArea.style.display = '';
+    treePreview.style.display = 'none';
+  } else {
+    previewArea.style.display = 'none';
+    treePreview.style.display = '';
+    if (currentTree) treePreview.textContent = JSON.stringify(currentTree, null, 2);
+    else treePreview.textContent = '// Hali HTML kiritilmagan';
+  }
+}
+
+function setStatus(type, text) {
+  statusEl.className = 'status ' + type;
+  statusText.textContent = text;
+}
+
+function setLoading(on) {
+  createBtn.disabled = on;
+  if (on) {
+    btnIcon.textContent = '';
+    btnIcon.innerHTML = '<div class="spinner"></div>';
+    btnText.textContent = 'Yaratilmoqda...';
+  } else {
+    btnIcon.textContent = '✨';
+    btnText.textContent = 'Figmada yaratish';
+  }
+}
+
+function parseCSSString(str) {
+  const r = {};
+  if (!str) return r;
+  for (const decl of str.split(';')) {
+    const i = decl.indexOf(':');
+    if (i < 0) continue;
+    const k = decl.slice(0,i).trim();
+    const v = decl.slice(i+1).trim();
+    if (k && v) r[k.replace(/-([a-z])/g,(_,c)=>c.toUpperCase())] = v;
+  }
+  return r;
+}
+
+function px(v) { if(!v) return 0; const n=parseFloat(v); return isNaN(n)?0:n; }
+
+function parsePadding(css) {
+  if (css.padding) {
+    const p = css.padding.trim().split(/\s+/).map(px);
+    if (p.length===1) return {top:p[0],right:p[0],bottom:p[0],left:p[0]};
+    if (p.length===2) return {top:p[0],right:p[1],bottom:p[0],left:p[1]};
+    if (p.length===3) return {top:p[0],right:p[1],bottom:p[2],left:p[1]};
+    return {top:p[0],right:p[1],bottom:p[2],left:p[3]};
+  }
+  return {
+    top:    px(css.paddingTop)||0,
+    right:  px(css.paddingRight)||0,
+    bottom: px(css.paddingBottom)||0,
+    left:   px(css.paddingLeft)||0,
+  };
+}
+
+function parseColor(val) {
+  if (!val) return null;
+  val = val.trim();
+  if (val==='transparent'||val==='none') return null;
+  if (val.startsWith('#')) {
+    const h = val.slice(1);
+    if (h.length===3) {
+      return {r:parseInt(h[0]+h[0],16)/255,g:parseInt(h[1]+h[1],16)/255,b:parseInt(h[2]+h[2],16)/255,a:1};
+    }
+    if (h.length>=6) {
+      return {r:parseInt(h.slice(0,2),16)/255,g:parseInt(h.slice(2,4),16)/255,b:parseInt(h.slice(4,6),16)/255,
+              a:h.length===8?parseInt(h.slice(6,8),16)/255:1};
+    }
+  }
+  const m = val.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+))?\s*\)/);
+  if (m) return {r:parseInt(m[1])/255,g:parseInt(m[2])/255,b:parseInt(m[3])/255,a:m[4]!==undefined?parseFloat(m[4]):1};
+  const named = {white:{r:1,g:1,b:1,a:1},black:{r:0,g:0,b:0,a:1},
+    red:{r:1,g:0,b:0,a:1},blue:{r:0,g:0,b:1,a:1},green:{r:0,g:.5,b:0,a:1},
+    gray:{r:.5,g:.5,b:.5,a:1},grey:{r:.5,g:.5,b:.5,a:1}};
+  return named[val.toLowerCase()]||null;
+}
+
+function mapAlign(v) {
+  return {start:'MIN','flex-start':'MIN',end:'MAX','flex-end':'MAX',center:'CENTER',stretch:'STRETCH'}[v]||'MIN';
+}
+function mapJustify(v) {
+  const m={start:'MIN','flex-start':'MIN',end:'MAX','flex-end':'MAX',center:'CENTER',
+    'space-between':'SPACE_BETWEEN','space-around':'SPACE_BETWEEN','space-evenly':'SPACE_BETWEEN'};
+  return m[v]||'MIN';
+}
+
+function elementToNode(el, depth) {
+  if (el.nodeType===3) {
+    const t=el.textContent.trim();
+    return t ? {type:'TEXT',text:t,depth,fontSize:14,fontWeight:400,textColor:null} : null;
+  }
+  if (el.nodeType!==1) return null;
+
+  const tag = el.tagName.toLowerCase();
+  const css  = parseCSSString(el.getAttribute('style')||'');
+  const id   = el.getAttribute('id');
+  const cls  = el.getAttribute('class');
+  const name = id ? '#'+id : cls ? '.'+cls.split(' ')[0] : tag;
+
+  const isH = css.display==='flex' && css.flexDirection!=='column';
+  const isV = css.display==='flex' && css.flexDirection==='column';
+
+  const pad  = parsePadding(css);
+  const bgVal= css.backgroundColor||(css.background&&!css.background.includes('gradient')?css.background:null);
+  const bg   = parseColor(bgVal);
+  const tc   = parseColor(css.color||null);
+  const ff   = (css.fontFamily||'Inter').split(',')[0].replace(/['"]/g,'').trim();
+  const fs   = px(css.fontSize)||14;
+  const fw   = parseInt(css.fontWeight)||400;
+  const ta   = css.textAlign||'left';
+
+  const rawW = px(css.width);
+  const rawH = px(css.height);
+  const wMode= css.width==='100%'||css.flex==='1'?'FILL':rawW>0?'FIXED':'HUG';
+  const hMode= css.height==='100%'?'FILL':rawH>0?'FIXED':'HUG';
+  const gap  = px(css.gap||css.rowGap||'0');
+
+  const node = {
+    type:'FRAME', name, tag, depth,
+    hasAutoLayout: isH||isV,
+    layoutMode: isH?'HORIZONTAL':isV?'VERTICAL':'NONE',
+    primaryAxisAlignItems: mapJustify(css.justifyContent),
+    counterAxisAlignItems: mapAlign(css.alignItems),
+    itemSpacing: gap,
+    paddingTop:pad.top, paddingRight:pad.right, paddingBottom:pad.bottom, paddingLeft:pad.left,
+    width:rawW, height:rawH, widthMode:wMode, heightMode:hMode,
+    cornerRadius: px(css.borderRadius),
+    backgroundColor: bg,
+    opacity: css.opacity?parseFloat(css.opacity):1,
+    fontSize:fs, fontWeight:fw, fontFamily:ff, textAlign:ta, textColor:tc,
+    children:[],
+  };
+
+  for (const child of el.childNodes) {
+    if (child.nodeType===3) {
+      const t=child.textContent.trim();
+      if (t) node.children.push({type:'TEXT',text:t,depth:depth+1,fontSize:fs,fontWeight:fw,fontFamily:ff,textAlign:ta,textColor:tc});
+    } else if (child.nodeType===1) {
+      const cn=elementToNode(child,depth+1);
+      if (cn) node.children.push(cn);
+    }
+  }
+  return node;
+}
+
+function parseHTMLToTree(html) {
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString('<div id="__r__">'+html+'</div>','text/html');
+    const root = doc.getElementById('__r__');
+    if (!root) return null;
+    const children = Array.from(root.children).map(c=>elementToNode(c,0)).filter(Boolean);
+    if (!children.length) return null;
+    if (children.length===1) return children[0];
+    return {
+      type:'FRAME',name:'Root',tag:'div',depth:0,
+      hasAutoLayout:false,layoutMode:'NONE',
+      primaryAxisAlignItems:'MIN',counterAxisAlignItems:'MIN',
+      itemSpacing:0,paddingTop:0,paddingRight:0,paddingBottom:0,paddingLeft:0,
+      width:0,height:0,widthMode:'HUG',heightMode:'HUG',
+      cornerRadius:0,backgroundColor:null,opacity:1,
+      fontSize:14,fontWeight:400,fontFamily:'Inter',textAlign:'left',textColor:null,
+      children,
+    };
+  } catch(e) { return null; }
+}
+
+function updatePreview(html) {
+  if (!html.trim()) { preview.style.display='none'; placeholder.style.display=''; return; }
+  preview.style.display='block'; placeholder.style.display='none';
+  preview.srcdoc = html;
+}
+
+async function processZip(file) {
+  setStatus('loading','ZIP o\'qilmoqda...');
+  try {
+    if (!window.JSZip) {
+      await new Promise((res,rej)=>{
+        const t=setInterval(()=>{if(window.JSZip){clearInterval(t);res();}},100);
+        setTimeout(()=>{clearInterval(t);rej(new Error('JSZip yuklanmadi'));},5000);
+      });
+    }
+    const zip  = await JSZip.loadAsync(file);
+    const htmlFile = Object.keys(zip.files).find(n=>n.match(/index\.html$/i)||n.match(/\.html$/i));
+    if (!htmlFile) throw new Error('HTML fayl topilmadi');
+
+    let html = await zip.files[htmlFile].async('string');
+
+    const cssFiles = Object.keys(zip.files).filter(n=>n.endsWith('.css'));
+    const cssParts = [];
+    for (const cssFile of cssFiles) {
+      const cssText = await zip.files[cssFile].async('string');
+      cssParts.push(cssText);
+    }
+    if (cssParts.length) {
+      html = html.replace('</head>','<style>'+cssParts.join('\n')+'</style></head>');
+    }
+
+    currentHTML = html;
+    updatePreview(html);
+    currentTree = parseHTMLToTree(html);
+
+    fileName.textContent = '📄 ' + htmlFile;
+    fileSize.textContent = 'ZIP: ' + (file.size/1024).toFixed(1) + ' KB';
+    fileInfo.classList.add('show');
+
+    if (currentTree) {
+      setStatus('ready','Tayyor! Yaratish tugmasini bosing');
+      createBtn.disabled = false;
+      if (activeTab==='tree') treePreview.textContent=JSON.stringify(currentTree,null,2);
+    } else {
+      setStatus('error','HTML parse qilinmadi');
+    }
+  } catch(e) {
+    setStatus('error','Xato: '+e.message);
+    console.error(e);
+  }
+}
+
+htmlInput.addEventListener('input', ()=>{
+  const html = htmlInput.value.trim();
+  if (!html) {
+    currentHTML=''; currentTree=null;
+    createBtn.disabled=true;
+    setStatus('','Fayl yoki HTML kodi kiriting');
+    updatePreview('');
+    return;
+  }
+  currentHTML = html;
+  currentTree = parseHTMLToTree(html);
+  updatePreview('<style>body{margin:0;padding:12px}</style>'+html);
+  if (currentTree) {
+    setStatus('ready','Tayyor! Yaratish tugmasini bosing');
+    createBtn.disabled = false;
+    if (activeTab==='tree') treePreview.textContent=JSON.stringify(currentTree,null,2);
+  } else {
+    setStatus('error','HTML parse qilinmadi');
+    createBtn.disabled=true;
+  }
+});
+
+fileInput.addEventListener('change', e=>{
+  const f=e.target.files[0];
+  if (f) processZip(f);
+});
+
+dropZone.addEventListener('dragover', e=>{e.preventDefault();dropZone.classList.add('drag-over');});
+dropZone.addEventListener('dragleave', ()=>dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e=>{
+  e.preventDefault(); dropZone.classList.remove('drag-over');
+  const f=e.dataTransfer.files[0];
+  if (f&&f.name.endsWith('.zip')) processZip(f);
+});
+
+createBtn.addEventListener('click', ()=>{
+  if (!currentTree) return;
+  setLoading(true);
+  setStatus('loading','Figmada yaratilmoqda...');
+  parent.postMessage({pluginMessage:{type:'create',tree:currentTree}},'*');
+});
+
+window.addEventListener('message', e=>{
+  const msg = e.data.pluginMessage;
+  if (!msg) return;
+  if (msg.type==='done') {
+    setLoading(false);
+    setStatus('ready','Muvaffaqiyatli yaratildi! ✅');
+  }
+});
+</script>
+</body>
+</html>

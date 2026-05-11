@@ -1,371 +1,203 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState } from 'react';
 import JSZip from 'jszip';
-import html2canvas from 'html2canvas';
 import './App.css';
 
-const STATUS = {
-  IDLE: 'idle',
-  LOADING: 'loading',
-  PREVIEW: 'preview',
-  COPYING: 'copying',
-  COPIED: 'copied',
-  ERROR: 'error',
-};
-
 export default function App() {
-  const [status, setStatus] = useState(STATUS.IDLE);
-  const [fileName, setFileName] = useState('');
-  const [errorMsg, setErrorMsg] = useState('');
-  const [htmlContent, setHtmlContent] = useState('');
-  const [blobUrls, setBlobUrls] = useState({});
-  const iframeRef = useRef(null);
-  const previewRef = useRef(null);
-  const dragRef = useRef(false);
+  const [downloading, setDownloading] = useState(false);
+  const [done, setDone] = useState(false);
 
-  const processZip = async (file) => {
-    setFileName(file.name);
-    setStatus(STATUS.LOADING);
-    setErrorMsg('');
-
+  const downloadPlugin = async () => {
+    setDownloading(true);
     try {
-      const zip = await JSZip.loadAsync(file);
-      const files = {};
-
-      // Read all files from ZIP
-      const promises = [];
-      zip.forEach((relativePath, zipEntry) => {
-        if (!zipEntry.dir) {
-          promises.push(
-            zipEntry.async('arraybuffer').then(buf => {
-              files[relativePath] = buf;
-            })
-          );
-        }
-      });
-      await Promise.all(promises);
-
-      // Find the main HTML file
-      const htmlFiles = Object.keys(files).filter(
-        p => p.endsWith('.html') || p.endsWith('.htm')
-      );
-
-      if (htmlFiles.length === 0) {
-        // If no HTML, check for images
-        const imageFiles = Object.keys(files).filter(p =>
-          /\.(png|jpg|jpeg|gif|webp|svg)$/i.test(p)
-        );
-        if (imageFiles.length > 0) {
-          await handleImageZip(files, imageFiles);
-          return;
-        }
-        throw new Error('ZIP ichida HTML yoki rasm fayl topilmadi');
-      }
-
-      // Prefer index.html or first HTML file
-      const mainHtml =
-        htmlFiles.find(p => p.toLowerCase().endsWith('index.html')) ||
-        htmlFiles[0];
-
-      // Create blob URLs for all assets
-      const urls = {};
-      const mimeTypes = {
-        css: 'text/css',
-        js: 'application/javascript',
-        png: 'image/png',
-        jpg: 'image/jpeg',
-        jpeg: 'image/jpeg',
-        gif: 'image/gif',
-        webp: 'image/webp',
-        svg: 'image/svg+xml',
-        woff: 'font/woff',
-        woff2: 'font/woff2',
-        ttf: 'font/ttf',
-      };
-
-      for (const [path, buf] of Object.entries(files)) {
-        const ext = path.split('.').pop().toLowerCase();
-        const mime = mimeTypes[ext] || 'application/octet-stream';
-        const blob = new Blob([buf], { type: mime });
-        urls[path] = URL.createObjectURL(blob);
-      }
-
-      // Get HTML content and patch asset URLs
-      const htmlBuf = files[mainHtml];
-      const htmlText = new TextDecoder().decode(htmlBuf);
-
-      // Replace relative paths with blob URLs
-      let patchedHtml = htmlText;
-      for (const [path, url] of Object.entries(urls)) {
-        const basename = path.split('/').pop();
-        // Replace references to files in HTML
-        patchedHtml = patchedHtml
-          .replace(new RegExp(`(src|href)=["']([^"']*\\/)?${escapeRegex(basename)}["']`, 'g'), `$1="${url}"`)
-          .replace(new RegExp(`url\\(["']?([^"')]*\\/)?${escapeRegex(basename)}["']?\\)`, 'g'), `url("${url}")`);
-      }
-
-      // Revoke old URLs
-      Object.values(blobUrls).forEach(u => URL.revokeObjectURL(u));
-      setBlobUrls(urls);
-      setHtmlContent(patchedHtml);
-      setStatus(STATUS.PREVIEW);
-
-    } catch (err) {
-      setErrorMsg(err.message || 'Xato yuz berdi');
-      setStatus(STATUS.ERROR);
-    }
-  };
-
-  const handleImageZip = async (files, imageFiles) => {
-    // Show first image as preview, copy it
-    const firstImage = imageFiles[0];
-    const buf = files[firstImage];
-    const ext = firstImage.split('.').pop().toLowerCase();
-    const mime = ext === 'svg' ? 'image/svg+xml' : `image/${ext === 'jpg' ? 'jpeg' : ext}`;
-    const blob = new Blob([buf], { type: mime });
-    const url = URL.createObjectURL(blob);
-
-    Object.values(blobUrls).forEach(u => URL.revokeObjectURL(u));
-    setBlobUrls({ [firstImage]: url });
-    setHtmlContent(`<img src="${url}" style="max-width:100%;display:block;" />`);
-    setStatus(STATUS.PREVIEW);
-  };
-
-  const handleCopy = async () => {
-    setStatus(STATUS.COPYING);
-    try {
-      const target = iframeRef.current?.contentDocument?.body || previewRef.current;
-
-      let canvas;
-      if (iframeRef.current) {
-        // Capture iframe content
-        const iframeDoc = iframeRef.current.contentDocument;
-        canvas = await html2canvas(iframeDoc.body, {
-          useCORS: true,
-          allowTaint: true,
-          backgroundColor: '#ffffff',
-          scale: 2,
-          logging: false,
-        });
-      } else {
-        canvas = await html2canvas(previewRef.current, {
-          useCORS: true,
-          backgroundColor: '#ffffff',
-          scale: 2,
-          logging: false,
-        });
-      }
-
-      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
-
-      await navigator.clipboard.write([
-        new ClipboardItem({ 'image/png': blob }),
+      const [manifest, codeJs, uiHtml] = await Promise.all([
+        fetch('/plugin/manifest.json').then(r => r.text()),
+        fetch('/plugin/code.js').then(r => r.text()),
+        fetch('/plugin/ui.html').then(r => r.text()),
       ]);
 
-      setStatus(STATUS.COPIED);
-      setTimeout(() => setStatus(STATUS.PREVIEW), 3000);
-    } catch (err) {
-      setErrorMsg('Nusxa olishda xato: ' + (err.message || 'Ruxsat kerak'));
-      setStatus(STATUS.ERROR);
+      const zip = new JSZip();
+      zip.file('manifest.json', manifest);
+      zip.file('code.js', codeJs);
+      zip.file('ui.html', uiHtml);
+
+      const blob = await zip.generateAsync({ type: 'blob' });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href     = url;
+      a.download = 'html-figma-autolayout-plugin.zip';
+      a.click();
+      URL.revokeObjectURL(url);
+      setDone(true);
+      setTimeout(() => setDone(false), 3000);
+    } catch (e) {
+      alert('Yuklab olishda xato: ' + e.message);
     }
+    setDownloading(false);
   };
-
-  const handleFile = useCallback((file) => {
-    if (!file) return;
-    if (!file.name.endsWith('.zip')) {
-      setErrorMsg('Faqat .zip fayl qabul qilinadi');
-      setStatus(STATUS.ERROR);
-      return;
-    }
-    processZip(file);
-  }, []);
-
-  const onDrop = useCallback((e) => {
-    e.preventDefault();
-    dragRef.current = false;
-    const file = e.dataTransfer.files[0];
-    handleFile(file);
-  }, [handleFile]);
-
-  const onDragOver = (e) => { e.preventDefault(); dragRef.current = true; };
-  const onDragLeave = () => { dragRef.current = false; };
-
-  const reset = () => {
-    Object.values(blobUrls).forEach(u => URL.revokeObjectURL(u));
-    setBlobUrls({});
-    setHtmlContent('');
-    setFileName('');
-    setStatus(STATUS.IDLE);
-    setErrorMsg('');
-  };
-
-  const isPreview = status === STATUS.PREVIEW || status === STATUS.COPYING || status === STATUS.COPIED;
 
   return (
-    <div style={styles.root}>
-      {/* Header */}
-      <div style={styles.header}>
-        <div style={styles.logo}>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-            <rect x="2" y="2" width="9" height="9" rx="2" fill="#18a0fb"/>
-            <rect x="13" y="2" width="9" height="9" rx="2" fill="#a259ff"/>
-            <rect x="2" y="13" width="9" height="9" rx="2" fill="#1bc47d"/>
-            <rect x="13" y="13" width="9" height="4" rx="1" fill="#f24e1e"/>
-            <rect x="13" y="19" width="9" height="3" rx="1" fill="#ff7262"/>
-          </svg>
-          <span style={styles.logoText}>Figma Paste</span>
+    <div style={S.root}>
+      <header style={S.header}>
+        <div style={S.logoRow}>
+          <div style={S.logoIcon}>⚡</div>
+          <div>
+            <div style={S.logoTitle}>HTML → Figma AutoLayout</div>
+            <div style={S.logoSub}>Figma Plugin</div>
+          </div>
         </div>
-        <span style={styles.headerSub}>ZIP → Figma</span>
-      </div>
+        <a
+          href="https://www.figma.com/community/plugins"
+          style={S.headerLink}
+          target="_blank"
+          rel="noreferrer"
+        >
+          Figma Plugins
+        </a>
+      </header>
 
-      {/* Main */}
-      <div style={styles.main}>
+      <main style={S.main}>
+        <div style={S.hero}>
+          <div style={S.heroTag}>Figma Plugin</div>
+          <h1 style={S.heroTitle}>
+            HTML/CSS kodini<br />
+            <span style={S.heroAccent}>Figma Auto-Layout</span>ga aylantiring
+          </h1>
+          <p style={S.heroDesc}>
+            ZIP faylingizni yuklang — plugin har bir{' '}
+            <code style={S.code}>div</code>, padding, gap va rangni haqiqiy
+            Figma frame&apos;lariga aylantiradi. <strong>html.to.design</strong> kabi.
+          </p>
 
-        {/* IDLE / ERROR: Upload zone */}
-        {!isPreview && status !== STATUS.LOADING && (
-          <div style={styles.uploadCard}>
-            <div
+          <div style={S.btnRow}>
+            <button
               style={{
-                ...styles.dropZone,
-                borderColor: status === STATUS.ERROR ? '#ff6b6b' : '#3d3d3d',
-                background: status === STATUS.ERROR ? 'rgba(255,107,107,0.05)' : '#1e1e1e',
+                ...S.dlBtn,
+                background: done
+                  ? 'linear-gradient(135deg,#a6e3a1,#94e2d5)'
+                  : 'linear-gradient(135deg,#89b4fa,#cba6f7)',
+                opacity: downloading ? 0.7 : 1,
+                cursor: downloading ? 'not-allowed' : 'pointer',
               }}
-              onDrop={onDrop}
-              onDragOver={onDragOver}
-              onDragLeave={onDragLeave}
+              onClick={downloadPlugin}
+              disabled={downloading}
             >
-              {/* Icon */}
-              <div style={styles.uploadIcon}>
-                <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
-                  <rect x="8" y="8" width="32" height="32" rx="6" fill="#2c2c2c" stroke="#3d3d3d" strokeWidth="1.5"/>
-                  <path d="M24 18v14M18 24l6-6 6 6" stroke="#18a0fb" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                  <rect x="14" y="32" width="20" height="3" rx="1.5" fill="#3d3d3d"/>
-                </svg>
-              </div>
-
-              {status === STATUS.ERROR ? (
-                <p style={{ ...styles.uploadHint, color: '#ff6b6b', marginBottom: 16 }}>
-                  {errorMsg}
-                </p>
-              ) : (
-                <>
-                  <p style={styles.uploadTitle}>ZIP faylni bu yerga tashlang</p>
-                  <p style={styles.uploadHint}>yoki pastdagi tugmani bosing</p>
-                </>
-              )}
-
-              <label style={styles.uploadBtn}>
-                <input
-                  type="file"
-                  accept=".zip"
-                  style={{ display: 'none' }}
-                  onChange={e => handleFile(e.target.files[0])}
-                />
-                ZIP tanlash
-              </label>
-            </div>
-
-            <p style={styles.supportNote}>
-              HTML, CSS, rasm fayllari qo'llab-quvvatlanadi
-            </p>
+              {done ? '✅ Yuklab olindi!' : downloading ? '⏳ Tayyorlanmoqda…' : '⬇️  Plugin yuklab olish'}
+            </button>
+            <div style={S.dlNote}>Bepul · ZIP · 3 ta fayl</div>
           </div>
-        )}
+        </div>
 
-        {/* LOADING */}
-        {status === STATUS.LOADING && (
-          <div style={styles.centered}>
-            <div style={styles.spinner} />
-            <p style={styles.loadingText}>ZIP ochilmoqda...</p>
-            <p style={{ ...styles.loadingText, fontSize: 12, opacity: 0.5 }}>{fileName}</p>
-          </div>
-        )}
-
-        {/* PREVIEW */}
-        {isPreview && (
-          <div style={styles.previewLayout}>
-            {/* Top bar */}
-            <div style={styles.previewBar}>
-              <div style={styles.fileTag}>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
-                  <path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9l-7-7z" stroke="#8c8c8c" strokeWidth="2" fill="none"/>
-                  <path d="M13 2v7h7" stroke="#8c8c8c" strokeWidth="2" strokeLinecap="round"/>
-                </svg>
-                <span style={styles.fileTagText}>{fileName}</span>
-              </div>
-              <button onClick={reset} style={styles.resetBtn} title="Yangidan boshlash">
-                ✕ Boshqa fayl
-              </button>
+        <div style={S.features}>
+          {FEATURES.map(f => (
+            <div key={f.title} style={S.card}>
+              <div style={S.cardIcon}>{f.icon}</div>
+              <div style={S.cardTitle}>{f.title}</div>
+              <div style={S.cardDesc}>{f.desc}</div>
             </div>
+          ))}
+        </div>
 
-            {/* Preview iframe */}
-            <div style={styles.previewFrame}>
-              <iframe
-                ref={iframeRef}
-                srcDoc={htmlContent}
-                sandbox="allow-scripts allow-same-origin"
-                style={styles.iframe}
-                title="preview"
-              />
-            </div>
-
-            {/* Copy section */}
-            <div style={styles.copySection}>
-              {status === STATUS.COPIED ? (
-                <div style={styles.copiedBox}>
-                  <span style={styles.copiedIcon}>✓</span>
-                  <div>
-                    <p style={styles.copiedTitle}>Nusxa olindi!</p>
-                    <p style={styles.copiedHint}>Figmada Ctrl+V (yoki ⌘V) bosing</p>
-                  </div>
+        <div style={S.steps}>
+          <h2 style={S.stepsTitle}>Qanday o&apos;rnatiladi?</h2>
+          <div style={S.stepsList}>
+            {STEPS.map((s, i) => (
+              <div key={i} style={S.stepItem}>
+                <div style={S.stepNum}>{i + 1}</div>
+                <div>
+                  <div style={S.stepLabel}>{s.label}</div>
+                  <div style={S.stepSub}>{s.sub}</div>
                 </div>
-              ) : (
-                <button
-                  style={{
-                    ...styles.copyBtn,
-                    opacity: status === STATUS.COPYING ? 0.7 : 1,
-                  }}
-                  onClick={handleCopy}
-                  disabled={status === STATUS.COPYING}
-                >
-                  {status === STATUS.COPYING ? (
-                    <><span style={styles.btnSpinner} /> Nusxa olinmoqda...</>
-                  ) : (
-                    <><CopyIcon /> Copy</>
-                  )}
-                </button>
-              )}
-
-              <p style={styles.copyHint}>
-                Bosing → Figmada Ctrl+V bilan paste qiling
-              </p>
-            </div>
+              </div>
+            ))}
           </div>
-        )}
-      </div>
+        </div>
+
+        <div style={S.demo}>
+          <h2 style={S.stepsTitle}>Misol HTML</h2>
+          <pre style={S.codeBlock}>{EXAMPLE_HTML}</pre>
+          <p style={S.demoNote}>
+            Yuqoridagi HTML → Figma&apos;da 3 ta avto-layout frame bo&apos;ladi: wrapper → card → button
+          </p>
+        </div>
+      </main>
+
+      <footer style={S.footer}>
+        <span>HTML → Figma AutoLayout Plugin · {new Date().getFullYear()}</span>
+      </footer>
     </div>
   );
 }
 
-function CopyIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" style={{ marginRight: 8, flexShrink: 0 }}>
-      <rect x="9" y="9" width="13" height="13" rx="2" stroke="currentColor" strokeWidth="2"/>
-      <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-    </svg>
-  );
-}
+const FEATURES = [
+  {
+    icon: '🏗️',
+    title: 'Haqiqiy Auto-Layout',
+    desc: 'display:flex → Figma layoutMode HORIZONTAL/VERTICAL. gap → itemSpacing. padding → paddingTop/Right/Bottom/Left.',
+  },
+  {
+    icon: '📦',
+    title: 'ZIP yuklash',
+    desc: 'HTML + CSS fayllarni ZIP qilib yuklang. Plugin CSS ni ham o\'qib, ranglar va shriftlarni to\'g\'ri o\'rnatadi.',
+  },
+  {
+    icon: '🎨',
+    title: 'Ranglar & Radius',
+    desc: 'background-color, border-radius, opacity — barchasi Figma fills va cornerRadius sifatida uzatiladi.',
+  },
+  {
+    icon: '✍️',
+    title: 'Matn qatlamlari',
+    desc: 'Har bir text node → figma.createText(). fontSize, fontWeight, color to\'liq saqlanadi.',
+  },
+  {
+    icon: '↔️',
+    title: 'FILL / FIXED / HUG',
+    desc: 'width:100% → FILL, aniq px → FIXED, boshqalar → HUG. Figma sizing modeli to\'liq qo\'llaniladi.',
+  },
+  {
+    icon: '⚡',
+    title: 'Offline ishlaydi',
+    desc: 'Plugin ichida barcha parsing ishlaydi. Internet kerak emas, maxfiy kod tashqariga chiqmaydi.',
+  },
+];
 
-function escapeRegex(str) {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
+const STEPS = [
+  { label: 'Plugin ZIP yuklab oling', sub: 'Yuqoridagi tugmani bosing' },
+  { label: 'Figmani oching', sub: 'Menu → Plugins → Development → Import plugin from manifest…' },
+  { label: 'manifest.json tanlang', sub: "Ochilgan ZIP papkasidagi manifest.json faylini ko'rsating" },
+  { label: 'Pluginni ishga tushiring', sub: 'Plugins → Development → HTML → Figma AutoLayout' },
+  { label: 'ZIP yoki HTML kiriting', sub: 'Yuklang va "Figmada yaratish" tugmasini bosing' },
+];
 
-// ─── Styles ──────────────────────────────────────────────────────────────────
+const EXAMPLE_HTML = `<div style="display:flex;flex-direction:column;gap:16px;
+            padding:24px;background:#ffffff;border-radius:12px;width:360px">
 
-const styles = {
+  <h2 style="font-size:20px;font-weight:700;color:#1a1a2e">
+    Xush kelibsiz!
+  </h2>
+
+  <p style="font-size:14px;color:#6c7086;line-height:1.6">
+    Bu matn Figmada Text qatlami bo'ladi.
+  </p>
+
+  <div style="display:flex;flex-direction:row;gap:8px">
+    <button style="flex:1;padding:10px;background:#89b4fa;
+                   border-radius:8px;font-size:14px;color:#1e1e2e">
+      Asosiy
+    </button>
+    <button style="padding:10px 16px;background:#313244;
+                   border-radius:8px;font-size:14px;color:#cdd6f4">
+      Bekor
+    </button>
+  </div>
+</div>`;
+
+const S = {
   root: {
     minHeight: '100vh',
-    background: '#1e1e1e',
-    color: '#e5e5e5',
-    fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, sans-serif",
+    background: '#1e1e2e',
+    color: '#cdd6f4',
+    fontFamily: "-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",
     display: 'flex',
     flexDirection: 'column',
   },
@@ -373,226 +205,100 @@ const styles = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    padding: '12px 20px',
-    borderBottom: '1px solid #2c2c2c',
-    background: '#252525',
+    padding: '14px 32px',
+    background: '#181825',
+    borderBottom: '1px solid #313244',
+    position: 'sticky',
+    top: 0,
+    zIndex: 10,
   },
-  logo: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 8,
-  },
-  logoText: {
-    fontSize: 15,
-    fontWeight: 600,
-    color: '#e5e5e5',
-    letterSpacing: '-0.3px',
-  },
-  headerSub: {
-    fontSize: 11,
-    color: '#666',
-    background: '#2c2c2c',
-    padding: '3px 8px',
-    borderRadius: 4,
-  },
+  logoRow:   { display: 'flex', alignItems: 'center', gap: 10 },
+  logoIcon:  { width: 32, height: 32, background: 'linear-gradient(135deg,#89b4fa,#cba6f7)', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 },
+  logoTitle: { fontSize: 14, fontWeight: 700, color: '#cdd6f4' },
+  logoSub:   { fontSize: 11, color: '#6c7086' },
+  headerLink:{ fontSize: 12, color: '#89b4fa', textDecoration: 'none' },
   main: {
     flex: 1,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 24,
-  },
-  uploadCard: {
+    maxWidth: 900,
+    margin: '0 auto',
+    padding: '64px 24px 80px',
     width: '100%',
-    maxWidth: 480,
     display: 'flex',
     flexDirection: 'column',
-    alignItems: 'center',
-    gap: 12,
+    gap: 72,
   },
-  dropZone: {
-    width: '100%',
-    border: '2px dashed',
-    borderRadius: 16,
-    padding: '48px 32px',
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    gap: 12,
-    cursor: 'default',
-    transition: 'all 0.2s ease',
-  },
-  uploadIcon: {
-    marginBottom: 8,
-    opacity: 0.8,
-  },
-  uploadTitle: {
-    fontSize: 16,
-    fontWeight: 500,
-    color: '#e5e5e5',
-    margin: 0,
-  },
-  uploadHint: {
-    fontSize: 13,
-    color: '#666',
-    margin: 0,
-  },
-  uploadBtn: {
-    marginTop: 8,
-    padding: '10px 24px',
-    background: '#18a0fb',
-    color: '#fff',
+  hero:      { display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 20 },
+  heroTag:   { background: '#313244', color: '#89b4fa', fontSize: 11, fontWeight: 700, padding: '4px 12px', borderRadius: 20, letterSpacing: '.08em', textTransform: 'uppercase' },
+  heroTitle: { fontSize: 48, fontWeight: 800, lineHeight: 1.15, margin: 0, color: '#cdd6f4', letterSpacing: '-1px' },
+  heroAccent:{ background: 'linear-gradient(135deg,#89b4fa,#cba6f7)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' },
+  heroDesc:  { fontSize: 17, color: '#a6adc8', maxWidth: 560, lineHeight: 1.7, margin: 0 },
+  code:      { background: '#313244', padding: '1px 6px', borderRadius: 4, fontFamily: 'monospace', fontSize: 15, color: '#a6e3a1' },
+  btnRow:    { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 },
+  dlBtn: {
+    padding: '16px 40px',
     border: 'none',
-    borderRadius: 8,
-    fontSize: 14,
-    fontWeight: 500,
-    cursor: 'pointer',
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 6,
-    fontFamily: 'inherit',
-    transition: 'background 0.15s',
+    borderRadius: 14,
+    fontSize: 17,
+    fontWeight: 700,
+    color: '#1e1e2e',
+    transition: 'transform .15s, opacity .15s',
+    letterSpacing: '-0.3px',
   },
-  supportNote: {
-    fontSize: 11,
-    color: '#555',
-    margin: 0,
-  },
-  centered: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
+  dlNote:    { fontSize: 12, color: '#585b70' },
+  features: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit,minmax(250px,1fr))',
     gap: 16,
   },
-  spinner: {
-    width: 36,
-    height: 36,
-    border: '3px solid #2c2c2c',
-    borderTop: '3px solid #18a0fb',
-    borderRadius: '50%',
-    animation: 'spin 0.8s linear infinite',
+  card:      { background: '#181825', border: '1px solid #313244', borderRadius: 12, padding: '20px 22px', display: 'flex', flexDirection: 'column', gap: 8 },
+  cardIcon:  { fontSize: 24 },
+  cardTitle: { fontSize: 14, fontWeight: 700, color: '#cdd6f4' },
+  cardDesc:  { fontSize: 13, color: '#6c7086', lineHeight: 1.6 },
+  steps: {
+    background: '#181825',
+    border: '1px solid #313244',
+    borderRadius: 16,
+    padding: '32px 36px',
   },
-  loadingText: {
-    fontSize: 14,
-    color: '#8c8c8c',
-    margin: 0,
+  stepsTitle:{ fontSize: 22, fontWeight: 700, color: '#cdd6f4', marginBottom: 28 },
+  stepsList: { display: 'flex', flexDirection: 'column', gap: 20 },
+  stepItem:  { display: 'flex', alignItems: 'flex-start', gap: 16 },
+  stepNum: {
+    width: 30, height: 30, borderRadius: '50%',
+    background: 'linear-gradient(135deg,#89b4fa,#cba6f7)',
+    color: '#1e1e2e', fontSize: 13, fontWeight: 800,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    flexShrink: 0, marginTop: 2,
   },
-  previewLayout: {
-    width: '100%',
-    maxWidth: 900,
+  stepLabel: { fontSize: 15, fontWeight: 600, color: '#cdd6f4' },
+  stepSub:   { fontSize: 13, color: '#6c7086', marginTop: 2 },
+  demo: {
+    background: '#181825',
+    border: '1px solid #313244',
+    borderRadius: 16,
+    padding: '32px 36px',
     display: 'flex',
     flexDirection: 'column',
-    gap: 0,
-    background: '#252525',
-    borderRadius: 12,
-    border: '1px solid #333',
-    overflow: 'hidden',
+    gap: 16,
   },
-  previewBar: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: '10px 16px',
-    borderBottom: '1px solid #333',
-    background: '#2c2c2c',
-  },
-  fileTag: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 6,
-  },
-  fileTagText: {
-    fontSize: 12,
-    color: '#8c8c8c',
-    fontFamily: 'monospace',
-  },
-  resetBtn: {
-    background: 'none',
-    border: '1px solid #3d3d3d',
-    borderRadius: 6,
-    color: '#666',
-    fontSize: 11,
-    padding: '4px 10px',
-    cursor: 'pointer',
-    fontFamily: 'inherit',
-    transition: 'all 0.15s',
-  },
-  previewFrame: {
-    background: '#fff',
-    minHeight: 320,
-    maxHeight: 500,
-    overflow: 'hidden',
-    position: 'relative',
-  },
-  iframe: {
-    width: '100%',
-    height: 420,
-    border: 'none',
-    display: 'block',
-  },
-  copySection: {
-    padding: '20px 24px',
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    gap: 10,
-    borderTop: '1px solid #333',
-  },
-  copyBtn: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: '14px 40px',
-    background: '#18a0fb',
-    color: '#fff',
-    border: 'none',
+  codeBlock: {
+    background: '#11111b',
+    border: '1px solid #313244',
     borderRadius: 10,
-    fontSize: 16,
-    fontWeight: 600,
-    cursor: 'pointer',
-    fontFamily: 'inherit',
-    letterSpacing: '-0.2px',
-    transition: 'all 0.15s',
-    minWidth: 180,
-  },
-  btnSpinner: {
-    display: 'inline-block',
-    width: 14,
-    height: 14,
-    border: '2px solid rgba(255,255,255,0.3)',
-    borderTop: '2px solid #fff',
-    borderRadius: '50%',
-    animation: 'spin 0.7s linear infinite',
-    marginRight: 8,
-  },
-  copyHint: {
+    padding: '20px 22px',
+    fontFamily: "'Fira Code','Cascadia Code',monospace",
     fontSize: 12,
-    color: '#555',
+    color: '#a6e3a1',
+    overflowX: 'auto',
+    lineHeight: 1.7,
     margin: 0,
+  },
+  demoNote:  { fontSize: 13, color: '#6c7086', lineHeight: 1.6 },
+  footer: {
     textAlign: 'center',
-  },
-  copiedBox: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 12,
-    background: 'rgba(27,196,125,0.1)',
-    border: '1px solid rgba(27,196,125,0.3)',
-    borderRadius: 10,
-    padding: '12px 24px',
-  },
-  copiedIcon: {
-    fontSize: 24,
-    color: '#1bc47d',
-  },
-  copiedTitle: {
-    fontSize: 15,
-    fontWeight: 600,
-    color: '#1bc47d',
-    margin: '0 0 2px',
-  },
-  copiedHint: {
+    padding: '20px',
+    borderTop: '1px solid #313244',
     fontSize: 12,
-    color: '#8c8c8c',
-    margin: 0,
+    color: '#45475a',
   },
 };
