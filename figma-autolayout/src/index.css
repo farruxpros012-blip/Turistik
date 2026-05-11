@@ -1,0 +1,110 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: #1e1e1e;
+  color: #e5e5e5;
+}
+
+#root {
+  width: 100%;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #252525;
+}
+::-webkit-scrollbar-thumb {
+  background: #4a4a4a;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #5a5a5a;
+}
+
+/* Code editor */
+.code-editor {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  tab-size: 2;
+  resize: none;
+  outline: none;
+}
+
+/* Figma node box */
+.figma-node {
+  transition: all 0.2s ease;
+}
+
+.figma-node:hover {
+  outline: 1px solid #18a0fb;
+}
+
+/* Tooltip */
+.tooltip {
+  position: relative;
+}
+
+.tooltip:hover::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: #1a1a1a;
+  color: #e5e5e5;
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+  border: 1px solid #3d3d3d;
+  z-index: 100;
+  pointer-events: none;
+}
+
+/* Animated gradient for logo */
+@keyframes gradientShift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+.gradient-text {
+  background: linear-gradient(135deg, #18a0fb, #a259ff, #1bc47d);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  animation: gradientShift 4s ease infinite;
+}
+
+/* Canvas grid */
+.canvas-grid {
+  background-image:
+    radial-gradient(circle, #3a3a3a 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+/* Section divider */
+.section-divider {
+  border: none;
+  border-top: 1px solid #3d3d3d;
+}
