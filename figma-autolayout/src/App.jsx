@@ -1,38 +1,221 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import JSZip from 'jszip';
 import './App.css';
 
+// ─── CSS parser (same logic as plugin ui.html) ────────────────────────────────
+function parseCSSString(str) {
+  const r = {};
+  if (!str) return r;
+  for (const decl of str.split(';')) {
+    const i = decl.indexOf(':');
+    if (i < 0) continue;
+    const k = decl.slice(0, i).trim();
+    const v = decl.slice(i + 1).trim();
+    if (k && v) r[k.replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = v;
+  }
+  return r;
+}
+const px = v => { if (!v) return 0; const n = parseFloat(v); return isNaN(n) ? 0 : n; };
+
+function parsePadding(css) {
+  if (css.padding) {
+    const p = css.padding.trim().split(/\s+/).map(px);
+    if (p.length === 1) return { top: p[0], right: p[0], bottom: p[0], left: p[0] };
+    if (p.length === 2) return { top: p[0], right: p[1], bottom: p[0], left: p[1] };
+    if (p.length === 3) return { top: p[0], right: p[1], bottom: p[2], left: p[1] };
+    return { top: p[0], right: p[1], bottom: p[2], left: p[3] };
+  }
+  return {
+    top: px(css.paddingTop) || 0, right: px(css.paddingRight) || 0,
+    bottom: px(css.paddingBottom) || 0, left: px(css.paddingLeft) || 0,
+  };
+}
+
+function parseColor(val) {
+  if (!val) return null;
+  val = val.trim();
+  if (val === 'transparent' || val === 'none') return null;
+  if (val.startsWith('#')) {
+    const h = val.slice(1);
+    if (h.length === 3) return { r: parseInt(h[0]+h[0], 16)/255, g: parseInt(h[1]+h[1], 16)/255, b: parseInt(h[2]+h[2], 16)/255, a: 1 };
+    if (h.length >= 6) return {
+      r: parseInt(h.slice(0,2), 16)/255, g: parseInt(h.slice(2,4), 16)/255, b: parseInt(h.slice(4,6), 16)/255,
+      a: h.length === 8 ? parseInt(h.slice(6,8), 16)/255 : 1,
+    };
+  }
+  const m = val.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+))?\s*\)/);
+  if (m) return { r: parseInt(m[1])/255, g: parseInt(m[2])/255, b: parseInt(m[3])/255, a: m[4] !== undefined ? parseFloat(m[4]) : 1 };
+  const named = { white: {r:1,g:1,b:1,a:1}, black: {r:0,g:0,b:0,a:1}, red: {r:1,g:0,b:0,a:1}, blue: {r:0,g:0,b:1,a:1}, green: {r:0,g:.5,b:0,a:1}, gray: {r:.5,g:.5,b:.5,a:1}, grey: {r:.5,g:.5,b:.5,a:1} };
+  return named[val.toLowerCase()] || null;
+}
+
+const mapAlign = v => ({ start: 'MIN', 'flex-start': 'MIN', end: 'MAX', 'flex-end': 'MAX', center: 'CENTER', stretch: 'STRETCH' }[v] || 'MIN');
+const mapJustify = v => ({ start: 'MIN', 'flex-start': 'MIN', end: 'MAX', 'flex-end': 'MAX', center: 'CENTER', 'space-between': 'SPACE_BETWEEN', 'space-around': 'SPACE_BETWEEN', 'space-evenly': 'SPACE_BETWEEN' }[v] || 'MIN');
+
+function elementToNode(el, depth) {
+  if (el.nodeType === 3) {
+    const t = el.textContent.trim();
+    return t ? { type: 'TEXT', text: t, depth, fontSize: 14, fontWeight: 400, textColor: null } : null;
+  }
+  if (el.nodeType !== 1) return null;
+
+  const tag = el.tagName.toLowerCase();
+  const css = parseCSSString(el.getAttribute('style') || '');
+  const id = el.getAttribute('id');
+  const cls = el.getAttribute('class');
+  const name = id ? '#' + id : cls ? '.' + cls.split(' ')[0] : tag;
+
+  const isH = css.display === 'flex' && css.flexDirection !== 'column';
+  const isV = css.display === 'flex' && css.flexDirection === 'column';
+  const pad = parsePadding(css);
+  const bgVal = css.backgroundColor || (css.background && !css.background.includes('gradient') ? css.background : null);
+  const bg = parseColor(bgVal);
+  const tc = parseColor(css.color || null);
+  const ff = (css.fontFamily || 'Inter').split(',')[0].replace(/['"]/g, '').trim();
+  const fs = px(css.fontSize) || 14;
+  const fw = parseInt(css.fontWeight) || 400;
+  const ta = css.textAlign || 'left';
+
+  const rawW = px(css.width);
+  const rawH = px(css.height);
+  const wMode = css.width === '100%' || css.flex === '1' ? 'FILL' : rawW > 0 ? 'FIXED' : 'HUG';
+  const hMode = css.height === '100%' ? 'FILL' : rawH > 0 ? 'FIXED' : 'HUG';
+  const gap = px(css.gap || css.rowGap || '0');
+
+  const node = {
+    type: 'FRAME', name, tag, depth,
+    hasAutoLayout: isH || isV,
+    layoutMode: isH ? 'HORIZONTAL' : isV ? 'VERTICAL' : 'NONE',
+    primaryAxisAlignItems: mapJustify(css.justifyContent),
+    counterAxisAlignItems: mapAlign(css.alignItems),
+    itemSpacing: gap,
+    paddingTop: pad.top, paddingRight: pad.right, paddingBottom: pad.bottom, paddingLeft: pad.left,
+    width: rawW, height: rawH, widthMode: wMode, heightMode: hMode,
+    cornerRadius: px(css.borderRadius),
+    backgroundColor: bg,
+    opacity: css.opacity ? parseFloat(css.opacity) : 1,
+    fontSize: fs, fontWeight: fw, fontFamily: ff, textAlign: ta, textColor: tc,
+    children: [],
+  };
+
+  for (const child of el.childNodes) {
+    if (child.nodeType === 3) {
+      const t = child.textContent.trim();
+      if (t) node.children.push({ type: 'TEXT', text: t, depth: depth + 1, fontSize: fs, fontWeight: fw, fontFamily: ff, textAlign: ta, textColor: tc });
+    } else if (child.nodeType === 1) {
+      const cn = elementToNode(child, depth + 1);
+      if (cn) node.children.push(cn);
+    }
+  }
+  return node;
+}
+
+function parseHTMLToTree(html) {
+  try {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString('<div id="__r__">' + html + '</div>', 'text/html');
+    const root = doc.getElementById('__r__');
+    if (!root) return null;
+    const children = Array.from(root.children).map(c => elementToNode(c, 0)).filter(Boolean);
+    if (!children.length) return null;
+    if (children.length === 1) return children[0];
+    return {
+      type: 'FRAME', name: 'Root', tag: 'div', depth: 0,
+      hasAutoLayout: false, layoutMode: 'NONE',
+      primaryAxisAlignItems: 'MIN', counterAxisAlignItems: 'MIN',
+      itemSpacing: 0, paddingTop: 0, paddingRight: 0, paddingBottom: 0, paddingLeft: 0,
+      width: 0, height: 0, widthMode: 'HUG', heightMode: 'HUG',
+      cornerRadius: 0, backgroundColor: null, opacity: 1,
+      fontSize: 14, fontWeight: 400, fontFamily: 'Inter', textAlign: 'left', textColor: null,
+      children,
+    };
+  } catch { return null; }
+}
+
+// ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [downloading, setDownloading] = useState(false);
-  const [done, setDone] = useState(false);
+  const [status, setStatus] = useState('idle'); // idle | loading | ready | copied | error
+  const [fileName, setFileName] = useState('');
+  const [tree, setTree] = useState(null);
+  const [previewHTML, setPreviewHTML] = useState('');
+  const [error, setError] = useState('');
+  const [dragOver, setDragOver] = useState(false);
+  const fileRef = useRef(null);
+
+  const reset = () => {
+    setStatus('idle'); setFileName(''); setTree(null);
+    setPreviewHTML(''); setError('');
+  };
+
+  const processZip = async (file) => {
+    setStatus('loading'); setFileName(file.name); setError('');
+    try {
+      const zip = await JSZip.loadAsync(file);
+      const htmlFile = Object.keys(zip.files).find(n => /index\.html?$/i.test(n))
+                   || Object.keys(zip.files).find(n => /\.html?$/i.test(n));
+      if (!htmlFile) throw new Error('ZIP ichida HTML fayl topilmadi');
+
+      let html = await zip.files[htmlFile].async('string');
+
+      const cssFiles = Object.keys(zip.files).filter(n => n.endsWith('.css'));
+      const cssParts = [];
+      for (const f of cssFiles) cssParts.push(await zip.files[f].async('string'));
+      if (cssParts.length && html.includes('</head>')) {
+        html = html.replace('</head>', '<style>' + cssParts.join('\n') + '</style></head>');
+      } else if (cssParts.length) {
+        html = '<style>' + cssParts.join('\n') + '</style>' + html;
+      }
+
+      const parsedTree = parseHTMLToTree(html);
+      if (!parsedTree) throw new Error('HTML strukturasini o\'qib bo\'lmadi');
+
+      setTree(parsedTree);
+      setPreviewHTML(html);
+      setStatus('ready');
+    } catch (e) {
+      setError(e.message); setStatus('error');
+    }
+  };
+
+  const handleFile = (file) => {
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith('.zip')) {
+      setError('Faqat .zip fayl qabul qilinadi'); setStatus('error'); return;
+    }
+    processZip(file);
+  };
+
+  const handleCopy = async () => {
+    if (!tree) return;
+    try {
+      const payload = JSON.stringify({ __figmaAutoLayout: true, tree });
+      await navigator.clipboard.writeText(payload);
+      setStatus('copied');
+      setTimeout(() => setStatus('ready'), 2500);
+    } catch (e) {
+      setError('Clipboard\'ga yozib bo\'lmadi: ' + e.message);
+    }
+  };
 
   const downloadPlugin = async () => {
-    setDownloading(true);
     try {
       const [manifest, codeJs, uiHtml] = await Promise.all([
         fetch('/plugin/manifest.json').then(r => r.text()),
         fetch('/plugin/code.js').then(r => r.text()),
         fetch('/plugin/ui.html').then(r => r.text()),
       ]);
-
       const zip = new JSZip();
       zip.file('manifest.json', manifest);
       zip.file('code.js', codeJs);
       zip.file('ui.html', uiHtml);
-
       const blob = await zip.generateAsync({ type: 'blob' });
-      const url  = URL.createObjectURL(blob);
-      const a    = document.createElement('a');
-      a.href     = url;
-      a.download = 'html-figma-autolayout-plugin.zip';
-      a.click();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'html-figma-autolayout-plugin.zip'; a.click();
       URL.revokeObjectURL(url);
-      setDone(true);
-      setTimeout(() => setDone(false), 3000);
     } catch (e) {
-      alert('Yuklab olishda xato: ' + e.message);
+      alert('Plugin yuklab olishda xato: ' + e.message);
     }
-    setDownloading(false);
   };
 
   return (
@@ -42,263 +225,189 @@ export default function App() {
           <div style={S.logoIcon}>⚡</div>
           <div>
             <div style={S.logoTitle}>HTML → Figma AutoLayout</div>
-            <div style={S.logoSub}>Figma Plugin</div>
+            <div style={S.logoSub}>ZIP → Copy → Figma</div>
           </div>
         </div>
-        <a
-          href="https://www.figma.com/community/plugins"
-          style={S.headerLink}
-          target="_blank"
-          rel="noreferrer"
-        >
-          Figma Plugins
-        </a>
+        <button onClick={downloadPlugin} style={S.pluginBtn}>
+          ⬇️ Plugin yuklab olish
+        </button>
       </header>
 
       <main style={S.main}>
-        <div style={S.hero}>
-          <div style={S.heroTag}>Figma Plugin</div>
-          <h1 style={S.heroTitle}>
-            HTML/CSS kodini<br />
-            <span style={S.heroAccent}>Figma Auto-Layout</span>ga aylantiring
-          </h1>
-          <p style={S.heroDesc}>
-            ZIP faylingizni yuklang — plugin har bir{' '}
-            <code style={S.code}>div</code>, padding, gap va rangni haqiqiy
-            Figma frame&apos;lariga aylantiradi. <strong>html.to.design</strong> kabi.
-          </p>
-
-          <div style={S.btnRow}>
-            <button
+        {status === 'idle' || status === 'error' ? (
+          <div style={S.dropWrap}>
+            <div
+              onDrop={e => { e.preventDefault(); setDragOver(false); handleFile(e.dataTransfer.files[0]); }}
+              onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+              onDragLeave={() => setDragOver(false)}
+              onClick={() => fileRef.current?.click()}
               style={{
-                ...S.dlBtn,
-                background: done
-                  ? 'linear-gradient(135deg,#a6e3a1,#94e2d5)'
-                  : 'linear-gradient(135deg,#89b4fa,#cba6f7)',
-                opacity: downloading ? 0.7 : 1,
-                cursor: downloading ? 'not-allowed' : 'pointer',
+                ...S.drop,
+                borderColor: status === 'error' ? '#f38ba8' : dragOver ? '#89b4fa' : '#45475a',
+                background: status === 'error' ? '#f38ba81a' : dragOver ? '#89b4fa14' : '#181825',
               }}
-              onClick={downloadPlugin}
-              disabled={downloading}
             >
-              {done ? '✅ Yuklab olindi!' : downloading ? '⏳ Tayyorlanmoqda…' : '⬇️  Plugin yuklab olish'}
-            </button>
-            <div style={S.dlNote}>Bepul · ZIP · 3 ta fayl</div>
-          </div>
-        </div>
-
-        <div style={S.features}>
-          {FEATURES.map(f => (
-            <div key={f.title} style={S.card}>
-              <div style={S.cardIcon}>{f.icon}</div>
-              <div style={S.cardTitle}>{f.title}</div>
-              <div style={S.cardDesc}>{f.desc}</div>
+              <input ref={fileRef} type="file" accept=".zip" hidden
+                onChange={e => handleFile(e.target.files[0])} />
+              <div style={S.dropIcon}>📦</div>
+              <h2 style={S.dropTitle}>
+                {status === 'error' ? '❌ ' + error : 'ZIP faylni shu yerga tashlang'}
+              </h2>
+              <p style={S.dropSub}>
+                yoki bosib tanlang · HTML + CSS qabul qilinadi
+              </p>
+              <div style={S.dropBtn}>Fayl tanlash</div>
             </div>
-          ))}
-        </div>
 
-        <div style={S.steps}>
-          <h2 style={S.stepsTitle}>Qanday o&apos;rnatiladi?</h2>
-          <div style={S.stepsList}>
-            {STEPS.map((s, i) => (
-              <div key={i} style={S.stepItem}>
-                <div style={S.stepNum}>{i + 1}</div>
-                <div>
-                  <div style={S.stepLabel}>{s.label}</div>
-                  <div style={S.stepSub}>{s.sub}</div>
+            <div style={S.steps}>
+              {[
+                ['1', 'ZIP yuklang', 'HTML + CSS bilan'],
+                ['2', 'Copy bosing', 'Clipboard\'ga'],
+                ['3', 'Pluginda Paste', 'Auto-layout tayyor ✨'],
+              ].map(([n, t, s]) => (
+                <div key={n} style={S.step}>
+                  <div style={S.stepN}>{n}</div>
+                  <div style={S.stepT}>{t}</div>
+                  <div style={S.stepS}>{s}</div>
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
-        </div>
+        ) : status === 'loading' ? (
+          <div style={S.center}>
+            <div style={S.spinner} />
+            <p style={S.loadingTxt}>{fileName} o'qilmoqda…</p>
+          </div>
+        ) : (
+          <div style={S.resultWrap}>
+            <div style={S.previewPane}>
+              <div style={S.paneHeader}>
+                <span style={S.paneLabel}>📄 {fileName}</span>
+                <button onClick={reset} style={S.resetBtn}>✕ Boshqa fayl</button>
+              </div>
+              <div style={S.iframeWrap}>
+                <iframe srcDoc={previewHTML} sandbox="allow-scripts"
+                  style={S.iframe} title="preview" />
+              </div>
+            </div>
 
-        <div style={S.demo}>
-          <h2 style={S.stepsTitle}>Misol HTML</h2>
-          <pre style={S.codeBlock}>{EXAMPLE_HTML}</pre>
-          <p style={S.demoNote}>
-            Yuqoridagi HTML → Figma&apos;da 3 ta avto-layout frame bo&apos;ladi: wrapper → card → button
-          </p>
-        </div>
+            <div style={S.actionPane}>
+              <div style={S.copyBox}>
+                <div style={S.successBadge}>✅ Tayyor!</div>
+                <h2 style={S.copyTitle}>HTML parse qilindi</h2>
+                <p style={S.copyDesc}>
+                  Endi <strong>Copy</strong> tugmasini bosing va Figma plugin'ida
+                  "Clipboard'dan o'qish" tugmasini bosing.
+                </p>
+
+                <button onClick={handleCopy}
+                  style={{
+                    ...S.bigCopy,
+                    background: status === 'copied'
+                      ? 'linear-gradient(135deg,#a6e3a1,#94e2d5)'
+                      : 'linear-gradient(135deg,#89b4fa,#cba6f7)',
+                  }}>
+                  {status === 'copied' ? '✅ Clipboard\'ga olindi!' : '📋 Copy'}
+                </button>
+
+                <div style={S.divider} />
+
+                <div style={S.flowBox}>
+                  <div style={S.flowTitle}>Keyingi qadam:</div>
+                  <ol style={S.flowList}>
+                    <li>Figma'ni oching</li>
+                    <li><strong>Plugins → HTML → Figma AutoLayout</strong></li>
+                    <li><strong>"Clipboard'dan o'qish"</strong> tugmasini bosing</li>
+                    <li>✨ Auto-layout frame'lar paydo bo'ladi</li>
+                  </ol>
+                </div>
+
+                <button onClick={downloadPlugin} style={S.pluginSmall}>
+                  Plugin hali o'rnatilmagan? ⬇️ Yuklab oling
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </main>
-
-      <footer style={S.footer}>
-        <span>HTML → Figma AutoLayout Plugin · {new Date().getFullYear()}</span>
-      </footer>
     </div>
   );
 }
 
-const FEATURES = [
-  {
-    icon: '🏗️',
-    title: 'Haqiqiy Auto-Layout',
-    desc: 'display:flex → Figma layoutMode HORIZONTAL/VERTICAL. gap → itemSpacing. padding → paddingTop/Right/Bottom/Left.',
-  },
-  {
-    icon: '📦',
-    title: 'ZIP yuklash',
-    desc: 'HTML + CSS fayllarni ZIP qilib yuklang. Plugin CSS ni ham o\'qib, ranglar va shriftlarni to\'g\'ri o\'rnatadi.',
-  },
-  {
-    icon: '🎨',
-    title: 'Ranglar & Radius',
-    desc: 'background-color, border-radius, opacity — barchasi Figma fills va cornerRadius sifatida uzatiladi.',
-  },
-  {
-    icon: '✍️',
-    title: 'Matn qatlamlari',
-    desc: 'Har bir text node → figma.createText(). fontSize, fontWeight, color to\'liq saqlanadi.',
-  },
-  {
-    icon: '↔️',
-    title: 'FILL / FIXED / HUG',
-    desc: 'width:100% → FILL, aniq px → FIXED, boshqalar → HUG. Figma sizing modeli to\'liq qo\'llaniladi.',
-  },
-  {
-    icon: '⚡',
-    title: 'Offline ishlaydi',
-    desc: 'Plugin ichida barcha parsing ishlaydi. Internet kerak emas, maxfiy kod tashqariga chiqmaydi.',
-  },
-];
-
-const STEPS = [
-  { label: 'Plugin ZIP yuklab oling', sub: 'Yuqoridagi tugmani bosing' },
-  { label: 'Figmani oching', sub: 'Menu → Plugins → Development → Import plugin from manifest…' },
-  { label: 'manifest.json tanlang', sub: "Ochilgan ZIP papkasidagi manifest.json faylini ko'rsating" },
-  { label: 'Pluginni ishga tushiring', sub: 'Plugins → Development → HTML → Figma AutoLayout' },
-  { label: 'ZIP yoki HTML kiriting', sub: 'Yuklang va "Figmada yaratish" tugmasini bosing' },
-];
-
-const EXAMPLE_HTML = `<div style="display:flex;flex-direction:column;gap:16px;
-            padding:24px;background:#ffffff;border-radius:12px;width:360px">
-
-  <h2 style="font-size:20px;font-weight:700;color:#1a1a2e">
-    Xush kelibsiz!
-  </h2>
-
-  <p style="font-size:14px;color:#6c7086;line-height:1.6">
-    Bu matn Figmada Text qatlami bo'ladi.
-  </p>
-
-  <div style="display:flex;flex-direction:row;gap:8px">
-    <button style="flex:1;padding:10px;background:#89b4fa;
-                   border-radius:8px;font-size:14px;color:#1e1e2e">
-      Asosiy
-    </button>
-    <button style="padding:10px 16px;background:#313244;
-                   border-radius:8px;font-size:14px;color:#cdd6f4">
-      Bekor
-    </button>
-  </div>
-</div>`;
-
 const S = {
-  root: {
-    minHeight: '100vh',
-    background: '#1e1e2e',
-    color: '#cdd6f4',
+  root: { minHeight: '100vh', background: '#1e1e2e', color: '#cdd6f4',
     fontFamily: "-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",
-    display: 'flex',
-    flexDirection: 'column',
-  },
-  header: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: '14px 32px',
-    background: '#181825',
-    borderBottom: '1px solid #313244',
-    position: 'sticky',
-    top: 0,
-    zIndex: 10,
-  },
-  logoRow:   { display: 'flex', alignItems: 'center', gap: 10 },
-  logoIcon:  { width: 32, height: 32, background: 'linear-gradient(135deg,#89b4fa,#cba6f7)', borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 },
-  logoTitle: { fontSize: 14, fontWeight: 700, color: '#cdd6f4' },
-  logoSub:   { fontSize: 11, color: '#6c7086' },
-  headerLink:{ fontSize: 12, color: '#89b4fa', textDecoration: 'none' },
-  main: {
-    flex: 1,
-    maxWidth: 900,
-    margin: '0 auto',
-    padding: '64px 24px 80px',
-    width: '100%',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 72,
-  },
-  hero:      { display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 20 },
-  heroTag:   { background: '#313244', color: '#89b4fa', fontSize: 11, fontWeight: 700, padding: '4px 12px', borderRadius: 20, letterSpacing: '.08em', textTransform: 'uppercase' },
-  heroTitle: { fontSize: 48, fontWeight: 800, lineHeight: 1.15, margin: 0, color: '#cdd6f4', letterSpacing: '-1px' },
-  heroAccent:{ background: 'linear-gradient(135deg,#89b4fa,#cba6f7)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' },
-  heroDesc:  { fontSize: 17, color: '#a6adc8', maxWidth: 560, lineHeight: 1.7, margin: 0 },
-  code:      { background: '#313244', padding: '1px 6px', borderRadius: 4, fontFamily: 'monospace', fontSize: 15, color: '#a6e3a1' },
-  btnRow:    { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 },
-  dlBtn: {
-    padding: '16px 40px',
-    border: 'none',
-    borderRadius: 14,
-    fontSize: 17,
-    fontWeight: 700,
-    color: '#1e1e2e',
-    transition: 'transform .15s, opacity .15s',
-    letterSpacing: '-0.3px',
-  },
-  dlNote:    { fontSize: 12, color: '#585b70' },
-  features: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit,minmax(250px,1fr))',
-    gap: 16,
-  },
-  card:      { background: '#181825', border: '1px solid #313244', borderRadius: 12, padding: '20px 22px', display: 'flex', flexDirection: 'column', gap: 8 },
-  cardIcon:  { fontSize: 24 },
-  cardTitle: { fontSize: 14, fontWeight: 700, color: '#cdd6f4' },
-  cardDesc:  { fontSize: 13, color: '#6c7086', lineHeight: 1.6 },
-  steps: {
-    background: '#181825',
-    border: '1px solid #313244',
-    borderRadius: 16,
-    padding: '32px 36px',
-  },
-  stepsTitle:{ fontSize: 22, fontWeight: 700, color: '#cdd6f4', marginBottom: 28 },
-  stepsList: { display: 'flex', flexDirection: 'column', gap: 20 },
-  stepItem:  { display: 'flex', alignItems: 'flex-start', gap: 16 },
-  stepNum: {
-    width: 30, height: 30, borderRadius: '50%',
-    background: 'linear-gradient(135deg,#89b4fa,#cba6f7)',
-    color: '#1e1e2e', fontSize: 13, fontWeight: 800,
-    display: 'flex', alignItems: 'center', justifyContent: 'center',
-    flexShrink: 0, marginTop: 2,
-  },
-  stepLabel: { fontSize: 15, fontWeight: 600, color: '#cdd6f4' },
-  stepSub:   { fontSize: 13, color: '#6c7086', marginTop: 2 },
-  demo: {
-    background: '#181825',
-    border: '1px solid #313244',
-    borderRadius: 16,
-    padding: '32px 36px',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 16,
-  },
-  codeBlock: {
-    background: '#11111b',
-    border: '1px solid #313244',
-    borderRadius: 10,
-    padding: '20px 22px',
-    fontFamily: "'Fira Code','Cascadia Code',monospace",
-    fontSize: 12,
-    color: '#a6e3a1',
-    overflowX: 'auto',
-    lineHeight: 1.7,
-    margin: 0,
-  },
-  demoNote:  { fontSize: 13, color: '#6c7086', lineHeight: 1.6 },
-  footer: {
-    textAlign: 'center',
-    padding: '20px',
-    borderTop: '1px solid #313244',
-    fontSize: 12,
-    color: '#45475a',
-  },
+    display: 'flex', flexDirection: 'column' },
+  header: { display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    padding: '14px 32px', background: '#181825', borderBottom: '1px solid #313244' },
+  logoRow: { display: 'flex', alignItems: 'center', gap: 10 },
+  logoIcon: { width: 32, height: 32, background: 'linear-gradient(135deg,#89b4fa,#cba6f7)',
+    borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 },
+  logoTitle: { fontSize: 14, fontWeight: 700 },
+  logoSub: { fontSize: 11, color: '#6c7086' },
+  pluginBtn: { padding: '8px 16px', background: '#313244', color: '#cdd6f4',
+    border: '1px solid #45475a', borderRadius: 8, fontSize: 12, fontWeight: 600,
+    cursor: 'pointer', fontFamily: 'inherit' },
+
+  main: { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 32 },
+
+  dropWrap: { width: '100%', maxWidth: 640, display: 'flex', flexDirection: 'column', gap: 32 },
+  drop: { border: '2px dashed', borderRadius: 16, padding: '64px 32px',
+    textAlign: 'center', cursor: 'pointer', transition: 'all .2s' },
+  dropIcon: { fontSize: 56, marginBottom: 16 },
+  dropTitle: { fontSize: 20, fontWeight: 700, marginBottom: 8 },
+  dropSub: { fontSize: 14, color: '#6c7086', marginBottom: 20 },
+  dropBtn: { display: 'inline-block', padding: '10px 24px',
+    background: 'linear-gradient(135deg,#89b4fa,#cba6f7)', color: '#1e1e2e',
+    borderRadius: 10, fontSize: 14, fontWeight: 700 },
+  steps: { display: 'flex', gap: 12 },
+  step: { flex: 1, background: '#181825', border: '1px solid #313244',
+    borderRadius: 12, padding: '18px 14px', display: 'flex',
+    flexDirection: 'column', alignItems: 'center', gap: 6, textAlign: 'center' },
+  stepN: { width: 28, height: 28, borderRadius: '50%',
+    background: 'linear-gradient(135deg,#89b4fa,#cba6f7)', color: '#1e1e2e',
+    fontSize: 13, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center' },
+  stepT: { fontSize: 13, fontWeight: 600, color: '#cdd6f4' },
+  stepS: { fontSize: 11, color: '#6c7086' },
+
+  center: { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 },
+  spinner: { width: 40, height: 40, border: '3px solid #313244',
+    borderTopColor: '#89b4fa', borderRadius: '50%', animation: 'spin .8s linear infinite' },
+  loadingTxt: { fontSize: 14, color: '#a6adc8' },
+
+  resultWrap: { width: '100%', maxWidth: 1200, height: 'calc(100vh - 120px)',
+    display: 'flex', gap: 20 },
+  previewPane: { flex: 1, minWidth: 0, background: '#181825',
+    border: '1px solid #313244', borderRadius: 14, display: 'flex',
+    flexDirection: 'column', overflow: 'hidden' },
+  paneHeader: { display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+    padding: '12px 16px', borderBottom: '1px solid #313244' },
+  paneLabel: { fontSize: 12, color: '#a6adc8', fontFamily: 'monospace' },
+  resetBtn: { background: 'transparent', border: '1px solid #45475a', borderRadius: 6,
+    color: '#a6adc8', fontSize: 11, padding: '4px 10px', cursor: 'pointer', fontFamily: 'inherit' },
+  iframeWrap: { flex: 1, background: '#fff', overflow: 'hidden' },
+  iframe: { width: '100%', height: '100%', border: 'none' },
+
+  actionPane: { width: 380, flexShrink: 0 },
+  copyBox: { background: '#181825', border: '1px solid #313244',
+    borderRadius: 14, padding: 28, height: '100%', display: 'flex',
+    flexDirection: 'column', gap: 16 },
+  successBadge: { alignSelf: 'flex-start', background: '#a6e3a11a', color: '#a6e3a1',
+    padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 700 },
+  copyTitle: { fontSize: 22, fontWeight: 800, color: '#cdd6f4' },
+  copyDesc: { fontSize: 13, color: '#a6adc8', lineHeight: 1.6 },
+  bigCopy: { padding: '20px', border: 'none', borderRadius: 14,
+    fontSize: 18, fontWeight: 800, color: '#1e1e2e', cursor: 'pointer',
+    fontFamily: 'inherit', letterSpacing: '-0.3px',
+    transition: 'all .2s', boxShadow: '0 4px 20px rgba(137,180,250,.2)' },
+  divider: { height: 1, background: '#313244', margin: '4px 0' },
+  flowBox: { background: '#11111b', border: '1px solid #313244',
+    borderRadius: 10, padding: '14px 18px' },
+  flowTitle: { fontSize: 11, fontWeight: 700, color: '#6c7086',
+    textTransform: 'uppercase', letterSpacing: '.08em', marginBottom: 10 },
+  flowList: { fontSize: 13, color: '#a6adc8', paddingLeft: 18,
+    lineHeight: 1.9, margin: 0 },
+  pluginSmall: { marginTop: 'auto', background: 'transparent',
+    border: '1px solid #313244', color: '#6c7086', padding: '10px',
+    borderRadius: 8, fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' },
 };

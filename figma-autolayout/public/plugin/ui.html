@@ -68,7 +68,19 @@ iframe{width:100%;height:100%;border:none;display:none}
 <div class="body">
   <div class="left">
     <div>
-      <div class="section-label">ZIP Fayl yuklash</div>
+      <div class="section-label">📋 Saytdan ko'chirilgan?</div>
+      <button class="btn btn-primary" id="pasteBtn" style="margin-bottom:6px">
+        <span>📋</span>
+        <span>Clipboard'dan o'qish</span>
+      </button>
+      <div style="font-size:11px;color:#6c7086;text-align:center;line-height:1.5">
+        Saytda Copy bosgan bo'lsangiz<br/>shu yerda bosing
+      </div>
+    </div>
+
+    <div class="or-divider">yoki ZIP yuklang</div>
+
+    <div>
       <div class="drop-zone" id="dropZone">
         <input type="file" id="fileInput" accept=".zip"/>
         <div class="drop-icon">📦</div>
@@ -419,6 +431,29 @@ createBtn.addEventListener('click', ()=>{
   setLoading(true);
   setStatus('loading','Figmada yaratilmoqda...');
   parent.postMessage({pluginMessage:{type:'create',tree:currentTree}},'*');
+});
+
+// ─── Clipboard paste: auto-read from website ──────────────────────────────────
+const pasteBtn = document.getElementById('pasteBtn');
+pasteBtn.addEventListener('click', async ()=>{
+  setStatus('loading','Clipboard o\'qilmoqda...');
+  try {
+    const txt = await navigator.clipboard.readText();
+    if (!txt || !txt.trim()) throw new Error('Clipboard bo\'sh');
+    let payload;
+    try { payload = JSON.parse(txt); }
+    catch { throw new Error('Clipboard\'da JSON yo\'q. Avval saytda Copy bosing.'); }
+    if (!payload || !payload.__figmaAutoLayout || !payload.tree)
+      throw new Error('Bu Figma AutoLayout payload emas. Saytda Copy bosing.');
+
+    currentTree = payload.tree;
+    setStatus('ready','Clipboard o\'qildi! Yaratilmoqda...');
+    setLoading(true);
+    parent.postMessage({pluginMessage:{type:'create',tree:currentTree}},'*');
+  } catch(e) {
+    setStatus('error',e.message);
+    console.error(e);
+  }
 });
 
 window.addEventListener('message', e=>{
